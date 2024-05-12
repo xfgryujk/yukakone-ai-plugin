@@ -1,13 +1,4 @@
 # Reference: https://nmori.github.io/yncneo-Docs/plugin/plugin_pythonunit/
-
-#=====================================================
-# ゆかコネNEO Pythonプラグイン拡張 サンプル
-#=====================================================
-# ・Pythonでつくれるプラグインモジュールです
-# ・Pythonスクリプトで動かすより、コンパイルしたほう
-#   速いですが、Pythonで書くほうがおそらく簡単です
-#=====================================================
-
 import logging.handlers
 import os
 
@@ -29,11 +20,27 @@ def _init_logging():
 
 _init_logging()
 
+API_KEY = 'no-key'
+BASE_URL = 'http://127.0.0.1:8080/v1'
+# https://github.com/SakuraLLM/Sakura-13B-Galgame
+IS_SAKURA = True
 
-client = openai.OpenAI(api_key='no-key', base_url='http://127.0.0.1:8080/v1')
+if IS_SAKURA:
+    SYSTEM_PROMPT = """\
+你是一个轻小说翻译模型，可以流畅通顺地以日本轻小说的风格将日文翻译成简体中文，并联系上下文正确使用人称代词，不擅自添加原文中没有的代词。
 
-PROMPT = """\
-你是一个中日翻译专家。你的任务是将下面提供的日文翻译成流畅、地道的中文。
+将下面的日文文本翻译成中文：\
+"""
+    PRESET_MESSAGES = [
+        {'role': 'system', 'content': SYSTEM_PROMPT},
+    ]
+
+    MAX_HISTORY_MESSAGES = 0
+    history_messages = []
+
+else:
+    SYSTEM_PROMPT = """\
+你是一个中日翻译专家。你的任务是将我说的日文翻译成流畅、地道的中文。
 
 请遵循以下准则：
 
@@ -42,48 +49,24 @@ PROMPT = """\
 - 谐音字：以下的日文是语音识别的结果，部分文字可能因为识别不准确而被替换为谐音字。\
 如果遇到不流畅的地方，你可以合理地猜测并替换原文的文字。
 - 语言和思维模式：注意中文语言的细微差别和文化思维模式，使译文能和母语人士产生共鸣。
-- 标点符号：不要在结果中每行的末尾添加句号。
+- 标点符号：不要在翻译结果的末尾添加句号。
 
-示例：“配信を見に来てくれてありがとう”翻译为“谢谢你来看我的直播”\
+现在准备将我说的话翻译成中文。\
 """
-QUERY = '日文原文：'
+    PRESET_MESSAGES = [
+        {'role': 'system', 'content': SYSTEM_PROMPT},
+        {'role': 'user', 'content': '配信来てくれてありがとう。'},
+        {'role': 'assistant', 'content': '谢谢你来看我的直播'},
+    ]
+
+    # 带上上下文试试
+    # 不能太长，否则容易复读
+    MAX_HISTORY_MESSAGES = 2 * 2
+    history_messages = []
+
+client = openai.OpenAI(api_key=API_KEY, base_url=BASE_URL)
 
 
-#=====================================================
-# 音声認識されたとき
-#=====================================================
-# これは、音声認識されるたびに呼び出されます。
-# ここを書き換えると、母国語の表示を置換できます。
-# Message["TextFixed"] が True ならば、音声認識で文が確定した状態です
-# Message["isDeleted"] が True ならば、文が取り消されたことを意味します
-# def PostRecognition(Message):
-#     text = Message["Text"]
-#     text = text.replace('です', 'にゃん')
-#     return text
-
-
-#=====================================================
-# 翻訳を実行する前
-#=====================================================
-# これは、翻訳を掛ける前の状態を変更できます。
-# Text1～Text4　は、それぞれ翻訳１～翻訳４に対応する母国語です。
-# ここを書き換えたあとのものが翻訳されます。
-# Message["Language1"] １～４が、翻訳先言語コードです
-# Message["Native"] が母国語言語コードです
-# Message["ID"] をみると、文章のユニークなIDが得られます
-# def PreTranslation(Message):
-#     text = Message["Text1"]
-#     text = text.replace('今日', '昨日')
-#     Message["Text1"] = text
-#     return Message
-
-
-#=====================================================
-# 翻訳を実行した後
-#=====================================================
-# これは、翻訳を掛けたあとの状態を変更できます。
-# Text1～Text4　は、それぞれ翻訳１～翻訳４に対応する翻訳後文です。
-# ここを書き換えたあとのものが表示されます。
 def PostTranslation(Message):
     try:
         # {'LogFolder': '...', 'ConfigFolder': '...', 'PluginFolder': '...', 'ID': '15132704-6f63-4103-9230-1cf33b32dbf6',
@@ -93,6 +76,7 @@ def PostTranslation(Message):
         # 'talkerName': '', 'isOwnersTalkData': True, 'isDeleted': False, 'isClearTimer': False}
         # logger.info('[PostTranslation] Message=%s', {**Message})
 
+        # 源语言必须是日语，第一个翻译引擎必须是关闭
         if Message['LanguageNative'] != 'ja' or Message['Language1'] != '*':
             return Message
 
@@ -108,16 +92,12 @@ def translate(input_):
         return ''
     logger.info('<< %s', input_)
 
-    query = QUERY + input_
     messages=[
-        {'role': 'system', 'content': PROMPT},
-        {'role': 'user', 'content': query},
+        *PRESET_MESSAGES,
+        *history_messages,
+        {'role': 'user', 'content': input_},
     ]
-    extra_query = {
-        'do_sample': False,
-        'num_beams': 1,
-        'repetition_penalty': 1.0,
-    }
+
     rsp = client.chat.completions.create(
         model='',
         messages=messages,
@@ -126,10 +106,45 @@ def translate(input_):
         max_tokens=512,
         frequency_penalty=0.0,
         seed=-1,
-        extra_query=extra_query,
+        extra_query={
+            'do_sample': False,
+            'num_beams': 1,
+            'repetition_penalty': 1.0,
+        },
         stream=False,
     )
     output = rsp.choices[0].message.content
-
     logger.info('>> %s', output)
-    return output
+
+    return post_process(input_, output)
+
+
+if IS_SAKURA:
+    def post_process(input_, output):
+        return output
+
+else:
+    def post_process(input_, output):
+        # 输出太长可能是发癫了
+        input_len = len(input_)
+        output_len = len(output)
+        if input_len < 5:
+            if output_len > 10:
+                return ''
+        else:
+            if output_len > input_len * 2:
+                return ''
+
+        # 如果有重复输出，要清空上下文，否则会一直复读
+        last_output_message = history_messages[-1] if history_messages else None
+        if last_output_message and output.rstrip('。？') == last_output_message['content'].rstrip('。？'):
+            history_messages.clear()
+            return output
+
+        # 添加上下文
+        history_messages.append({'role': 'user', 'content': input_})
+        history_messages.append({'role': 'assistant', 'content': output})
+        if len(history_messages) > MAX_HISTORY_MESSAGES:
+            del history_messages[:-MAX_HISTORY_MESSAGES]
+
+        return output
